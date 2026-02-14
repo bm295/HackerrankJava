@@ -1,0 +1,11 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <RootNamespace>HackerrankJava.Presentation</RootNamespace>
+    <AssemblyName>HackerrankJava.Presentation</AssemblyName>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../HackerrankJava.Application/HackerrankJava.Application.csproj" />
+    <ProjectReference Include="../HackerrankJava.Infrastructure/HackerrankJava.Infrastructure.csproj" />
+  </ItemGroup>
+</Project>
