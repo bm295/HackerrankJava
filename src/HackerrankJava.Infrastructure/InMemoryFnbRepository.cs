@@ -3,7 +3,7 @@ using HackerrankJava.Domain;
 
 namespace HackerrankJava.Infrastructure;
 
-public sealed class InMemoryFnbRepository : IFnbRepository
+public sealed class InMemoryFnbRepository : IFnbQueryPort, IFnbCommandPort
 {
     private readonly RestaurantProfile _profile = new(
         "Hemispheres Steak & Seafood Grill",

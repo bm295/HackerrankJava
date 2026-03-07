@@ -4,7 +4,9 @@ using HackerrankJava.Infrastructure;
 
 var builder = WebApplication.CreateBuilder(args);
 
-builder.Services.AddSingleton<IFnbRepository, InMemoryFnbRepository>();
+builder.Services.AddSingleton<InMemoryFnbRepository>();
+builder.Services.AddSingleton<IFnbQueryPort>(sp => sp.GetRequiredService<InMemoryFnbRepository>());
+builder.Services.AddSingleton<IFnbCommandPort>(sp => sp.GetRequiredService<InMemoryFnbRepository>());
 builder.Services.AddSingleton<FnbManagementService>();
 
 var app = builder.Build();
@@ -17,13 +19,14 @@ app.MapGet("/", (FnbManagementService service) =>
         profile.Name,
         profile.Location,
         CapacityRange = $"{profile.SeatCapacityMinimum}-{profile.SeatCapacityMaximum} seats",
-        Endpoints = new[]
-        {
+        Endpoints =
+        [
             "/tables",
             "/menu",
             "/orders/open",
-            "/reservations/upcoming"
-        }
+            "/reservations/upcoming",
+            "/integrations/food-app/orders"
+        ]
     });
 });
 
@@ -66,6 +69,24 @@ app.MapPost("/reservations", (CreateReservationRequest request, FnbManagementSer
     }
 });
 
+app.MapPost("/integrations/food-app/orders", (IntegrateFoodAppOrderApiRequest request, FnbManagementService service) =>
+{
+    try
+    {
+        var result = service.IntegrateFoodAppOrder(new FoodAppOrderRequest(
+            request.SourceApp,
+            request.ExternalOrderId,
+            request.TableCode,
+            request.Items.Select(x => new FoodAppOrderItemRequest(x.MenuItemId, x.Quantity)).ToArray()));
+
+        return Results.Created($"/orders/{result.InternalOrderId}", result);
+    }
+    catch (Exception ex) when (ex is ArgumentException or ArgumentOutOfRangeException or InvalidOperationException)
+    {
+        return Results.BadRequest(new { error = ex.Message });
+    }
+});
+
 app.Run();
 
 public sealed record CreateOrderRequest(Guid TableId, IReadOnlyCollection<CreateOrderLineRequest> Lines);
@@ -78,3 +99,11 @@ public sealed record CreateReservationRequest(
     DateTimeOffset ReservedFor,
     string ContactPhone,
     string? Notes);
+
+public sealed record IntegrateFoodAppOrderApiRequest(
+    string SourceApp,
+    string ExternalOrderId,
+    string TableCode,
+    IReadOnlyCollection<IntegrateFoodAppOrderItemApiRequest> Items);
+
+public sealed record IntegrateFoodAppOrderItemApiRequest(Guid MenuItemId, int Quantity);
