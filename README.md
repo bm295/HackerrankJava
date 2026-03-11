@@ -13,8 +13,8 @@ This repository now contains a layered C# application for **Hemispheres Steak & 
 - **.NET 10** (`net10.0`)
 - Layered architecture:
   - Presentation (Minimal API)
-  - Application (use-case service)
-  - Infrastructure (in-memory repository)
+  - Application (use-case service + ports)
+  - Infrastructure (in-memory adapters)
   - Domain (entities and value objects)
 
 ## Features implemented
@@ -22,8 +22,17 @@ This repository now contains a layered C# application for **Hemispheres Steak & 
 - Restaurant profile and seating capacity range
 - Dining table management overview
 - Menu management overview with availability filtering
-- Open order listing and order creation
-- Upcoming reservation listing and reservation creation
+- Full order lifecycle operations:
+  - create order
+  - add/remove items
+  - send order to kitchen
+  - process payment
+  - deduct inventory on close
+  - close order
+- Reservation creation and upcoming reservation listing
+- Inventory snapshot endpoint
+- Basic sales report endpoint
+- Food-app order integration endpoint
 
 ## Run
 
@@ -37,6 +46,14 @@ The API starts locally and exposes endpoints such as:
 - `GET /tables`
 - `GET /menu`
 - `GET /orders/open`
-- `GET /reservations/upcoming`
 - `POST /orders`
+- `POST /orders/{orderId}/items`
+- `DELETE /orders/{orderId}/items`
+- `POST /orders/{orderId}/send-to-kitchen`
+- `POST /orders/{orderId}/payments`
+- `POST /orders/{orderId}/close`
+- `GET /inventory`
+- `GET /reports/sales`
+- `GET /reservations/upcoming`
 - `POST /reservations`
+- `POST /integrations/food-app/orders`

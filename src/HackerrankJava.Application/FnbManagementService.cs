@@ -4,65 +4,194 @@ namespace HackerrankJava.Application;
 
 public interface IFnbQueryPort
 {
-    RestaurantProfile GetRestaurantProfile();
-    IReadOnlyCollection<DiningTable> GetTables();
-    IReadOnlyCollection<MenuItem> GetMenuItems();
-    IReadOnlyCollection<ServiceOrder> GetOrders();
-    IReadOnlyCollection<Reservation> GetReservations();
+    Task<RestaurantProfile> GetRestaurantProfileAsync(CancellationToken cancellationToken = default);
+    Task<IReadOnlyCollection<DiningTable>> GetTablesAsync(CancellationToken cancellationToken = default);
+    Task<IReadOnlyCollection<MenuItem>> GetMenuItemsAsync(CancellationToken cancellationToken = default);
+    Task<IReadOnlyCollection<ServiceOrder>> GetOrdersAsync(CancellationToken cancellationToken = default);
+    Task<IReadOnlyCollection<Reservation>> GetReservationsAsync(CancellationToken cancellationToken = default);
+    Task<IReadOnlyCollection<InventoryItem>> GetInventoryAsync(CancellationToken cancellationToken = default);
+    Task<IReadOnlyCollection<Payment>> GetPaymentsAsync(CancellationToken cancellationToken = default);
 }
 
 public interface IFnbCommandPort
 {
-    ServiceOrder AddOrder(Guid tableId, IReadOnlyCollection<OrderLine> lines);
-    Reservation AddReservation(string guestName, int partySize, DateTimeOffset reservedFor, string contactPhone, string? notes);
+    Task<ServiceOrder> AddOrderAsync(Guid tableId, IReadOnlyCollection<OrderLine> lines, CancellationToken cancellationToken = default);
+    Task<ServiceOrder> UpdateOrderLinesAsync(Guid orderId, IReadOnlyCollection<OrderLine> lines, CancellationToken cancellationToken = default);
+    Task<ServiceOrder> UpdateOrderStatusAsync(Guid orderId, OrderStatus status, CancellationToken cancellationToken = default);
+    Task<Reservation> AddReservationAsync(string guestName, int partySize, DateTimeOffset reservedFor, string contactPhone, string? notes, CancellationToken cancellationToken = default);
+    Task<IReadOnlyCollection<StockMovement>> DeductInventoryForOrderAsync(Guid orderId, CancellationToken cancellationToken = default);
+    Task<Payment> AddPaymentAsync(Guid orderId, decimal amount, PaymentMethod paymentMethod, CancellationToken cancellationToken = default);
 }
 
 public sealed class FnbManagementService(IFnbQueryPort queryPort, IFnbCommandPort commandPort)
 {
-    public RestaurantProfile GetProfile() => queryPort.GetRestaurantProfile();
+    public Task<RestaurantProfile> GetProfileAsync(CancellationToken cancellationToken = default) =>
+        queryPort.GetRestaurantProfileAsync(cancellationToken);
 
-    public IReadOnlyCollection<DiningTable> GetTables() => queryPort.GetTables();
+    public Task<IReadOnlyCollection<DiningTable>> GetTablesAsync(CancellationToken cancellationToken = default) =>
+        queryPort.GetTablesAsync(cancellationToken);
 
-    public IReadOnlyCollection<MenuItem> GetAvailableMenuItems() => queryPort
-        .GetMenuItems()
+    public async Task<IReadOnlyCollection<MenuItem>> GetAvailableMenuItemsAsync(CancellationToken cancellationToken = default) =>
+        (await queryPort.GetMenuItemsAsync(cancellationToken))
         .Where(item => item.IsAvailable)
         .OrderBy(item => item.Category, StringComparer.Ordinal)
         .ThenBy(item => item.Name, StringComparer.Ordinal)
         .ToArray();
 
-    public IReadOnlyCollection<ServiceOrder> GetOpenOrders() => queryPort
-        .GetOrders()
+    public async Task<IReadOnlyCollection<ServiceOrder>> GetOpenOrdersAsync(CancellationToken cancellationToken = default) =>
+        (await queryPort.GetOrdersAsync(cancellationToken))
         .Where(order => order.Status is OrderStatus.Open or OrderStatus.SentToKitchen)
         .OrderByDescending(order => order.CreatedAt)
         .ToArray();
 
-    public IReadOnlyCollection<Reservation> GetUpcomingReservations(DateTimeOffset now) => queryPort
-        .GetReservations()
+    public async Task<IReadOnlyCollection<Reservation>> GetUpcomingReservationsAsync(DateTimeOffset now, CancellationToken cancellationToken = default) =>
+        (await queryPort.GetReservationsAsync(cancellationToken))
         .Where(reservation => reservation.ReservedFor >= now && reservation.Status is not ReservationStatus.Cancelled)
         .OrderBy(reservation => reservation.ReservedFor)
         .ToArray();
 
-    public ServiceOrder CreateOrder(Guid tableId, IReadOnlyCollection<OrderLine> lines)
-    {
-        if (lines.Count == 0)
-        {
-            throw new ArgumentException("An order must contain at least one line item.", nameof(lines));
-        }
+    public Task<IReadOnlyCollection<InventoryItem>> GetInventoryAsync(CancellationToken cancellationToken = default) =>
+        queryPort.GetInventoryAsync(cancellationToken);
 
-        return commandPort.AddOrder(tableId, lines);
+    public async Task<SalesReport> GetSalesReportAsync(DateTimeOffset from, DateTimeOffset to, CancellationToken cancellationToken = default)
+    {
+        var payments = await queryPort.GetPaymentsAsync(cancellationToken);
+        var orders = await queryPort.GetOrdersAsync(cancellationToken);
+
+        var successfulPayments = payments
+            .Where(x => x.Status is PaymentStatus.Settled && x.PaidAt >= from && x.PaidAt <= to)
+            .ToArray();
+
+        var totalRevenue = successfulPayments.Sum(x => x.Amount);
+        var paidOrderIds = successfulPayments.Select(x => x.OrderId).Distinct().ToHashSet();
+        var closedOrders = orders.Count(x => x.Status is OrderStatus.Completed && paidOrderIds.Contains(x.Id));
+
+        return new SalesReport(from, to, totalRevenue, successfulPayments.Length, closedOrders);
     }
 
-    public Reservation CreateReservation(string guestName, int partySize, DateTimeOffset reservedFor, string contactPhone, string? notes)
+    public Task<ServiceOrder> CreateOrderAsync(Guid tableId, IReadOnlyCollection<OrderLine> lines, CancellationToken cancellationToken = default)
+    {
+        ValidateOrderLines(lines);
+        return commandPort.AddOrderAsync(tableId, lines, cancellationToken);
+    }
+
+    public async Task<ServiceOrder> AddOrderItemAsync(Guid orderId, Guid menuItemId, int quantity, CancellationToken cancellationToken = default)
+    {
+        if (quantity <= 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(quantity), "Quantity must be greater than zero.");
+        }
+
+        var order = await GetOrderByIdAsync(orderId, cancellationToken);
+        EnsureOrderEditable(order);
+
+        var menuItem = await GetAvailableMenuItemAsync(menuItemId, cancellationToken);
+
+        var lines = order.Lines.ToList();
+        var existingLine = lines.SingleOrDefault(x => x.MenuItemId == menuItemId);
+
+        if (existingLine is null)
+        {
+            lines.Add(new OrderLine(menuItem.Id, quantity, menuItem.Price));
+        }
+        else
+        {
+            var index = lines.IndexOf(existingLine);
+            lines[index] = existingLine with { Quantity = existingLine.Quantity + quantity };
+        }
+
+        return await commandPort.UpdateOrderLinesAsync(orderId, lines, cancellationToken);
+    }
+
+    public async Task<ServiceOrder> RemoveOrderItemAsync(Guid orderId, Guid menuItemId, int quantity, CancellationToken cancellationToken = default)
+    {
+        if (quantity <= 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(quantity), "Quantity must be greater than zero.");
+        }
+
+        var order = await GetOrderByIdAsync(orderId, cancellationToken);
+        EnsureOrderEditable(order);
+
+        var lines = order.Lines.ToList();
+        var existingLine = lines.SingleOrDefault(x => x.MenuItemId == menuItemId)
+            ?? throw new InvalidOperationException("Order line not found.");
+
+        var remainingQuantity = existingLine.Quantity - quantity;
+        if (remainingQuantity < 0)
+        {
+            throw new InvalidOperationException("Cannot remove more items than currently in the order.");
+        }
+
+        lines.Remove(existingLine);
+        if (remainingQuantity > 0)
+        {
+            lines.Add(existingLine with { Quantity = remainingQuantity });
+        }
+
+        ValidateOrderLines(lines);
+        return await commandPort.UpdateOrderLinesAsync(orderId, lines, cancellationToken);
+    }
+
+    public async Task<ServiceOrder> SendOrderToKitchenAsync(Guid orderId, CancellationToken cancellationToken = default)
+    {
+        var order = await GetOrderByIdAsync(orderId, cancellationToken);
+        if (order.Status is not OrderStatus.Open)
+        {
+            throw new InvalidOperationException("Only open orders can be sent to kitchen.");
+        }
+
+        return await commandPort.UpdateOrderStatusAsync(orderId, OrderStatus.SentToKitchen, cancellationToken);
+    }
+
+    public async Task<Payment> ProcessPaymentAsync(Guid orderId, decimal amount, PaymentMethod paymentMethod, CancellationToken cancellationToken = default)
+    {
+        if (amount <= 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(amount), "Payment amount must be greater than zero.");
+        }
+
+        var order = await GetOrderByIdAsync(orderId, cancellationToken);
+        if (order.Status is not (OrderStatus.SentToKitchen or OrderStatus.Open))
+        {
+            throw new InvalidOperationException("Only active orders can be paid.");
+        }
+
+        if (amount < order.TotalAmount)
+        {
+            throw new InvalidOperationException("Payment amount is less than order total.");
+        }
+
+        return await commandPort.AddPaymentAsync(orderId, amount, paymentMethod, cancellationToken);
+    }
+
+    public async Task<ServiceOrder> CloseOrderAsync(Guid orderId, CancellationToken cancellationToken = default)
+    {
+        var order = await GetOrderByIdAsync(orderId, cancellationToken);
+
+        var payments = await queryPort.GetPaymentsAsync(cancellationToken);
+        var hasSettledPayment = payments.Any(x => x.OrderId == orderId && x.Status is PaymentStatus.Settled);
+
+        if (!hasSettledPayment)
+        {
+            throw new InvalidOperationException("Order cannot be closed before successful payment.");
+        }
+
+        await commandPort.DeductInventoryForOrderAsync(orderId, cancellationToken);
+        return await commandPort.UpdateOrderStatusAsync(orderId, OrderStatus.Completed, cancellationToken);
+    }
+
+    public Task<Reservation> CreateReservationAsync(string guestName, int partySize, DateTimeOffset reservedFor, string contactPhone, string? notes, CancellationToken cancellationToken = default)
     {
         if (partySize <= 0)
         {
             throw new ArgumentOutOfRangeException(nameof(partySize), "Party size must be greater than zero.");
         }
 
-        return commandPort.AddReservation(guestName, partySize, reservedFor, contactPhone, notes);
+        return commandPort.AddReservationAsync(guestName, partySize, reservedFor, contactPhone, notes, cancellationToken);
     }
 
-    public FoodAppIntegrationResult IntegrateFoodAppOrder(FoodAppOrderRequest request)
+    public async Task<FoodAppIntegrationResult> IntegrateFoodAppOrderAsync(FoodAppOrderRequest request, CancellationToken cancellationToken = default)
     {
         if (string.IsNullOrWhiteSpace(request.SourceApp))
         {
@@ -79,11 +208,11 @@ public sealed class FnbManagementService(IFnbQueryPort queryPort, IFnbCommandPor
             throw new ArgumentException("At least one food app item is required.", nameof(request));
         }
 
-        var table = queryPort.GetTables()
+        var table = (await queryPort.GetTablesAsync(cancellationToken))
             .SingleOrDefault(x => string.Equals(x.Code, request.TableCode, StringComparison.OrdinalIgnoreCase))
             ?? throw new InvalidOperationException($"Table code '{request.TableCode}' was not found.");
 
-        var menuItemsById = queryPort.GetMenuItems().ToDictionary(item => item.Id, item => item);
+        var menuItemsById = (await queryPort.GetMenuItemsAsync(cancellationToken)).ToDictionary(item => item.Id, item => item);
 
         var lines = request.Items
             .Select(item =>
@@ -103,11 +232,11 @@ public sealed class FnbManagementService(IFnbQueryPort queryPort, IFnbCommandPor
                     throw new ArgumentOutOfRangeException(nameof(request), "Each item quantity must be greater than zero.");
                 }
 
-                return new OrderLine(menuItem.Id, item.Quantity, menuItem.PriceVnd);
+                return new OrderLine(menuItem.Id, item.Quantity, menuItem.Price);
             })
             .ToArray();
 
-        var order = CreateOrder(table.Id, lines);
+        var order = await CreateOrderAsync(table.Id, lines, cancellationToken);
 
         return new FoodAppIntegrationResult(
             request.SourceApp,
@@ -115,7 +244,49 @@ public sealed class FnbManagementService(IFnbQueryPort queryPort, IFnbCommandPor
             order.Id,
             table.Code,
             order.CreatedAt,
-            order.Lines.Sum(line => line.Quantity * line.UnitPrice));
+            order.TotalAmount);
+    }
+
+    private async Task<ServiceOrder> GetOrderByIdAsync(Guid orderId, CancellationToken cancellationToken)
+    {
+        var order = (await queryPort.GetOrdersAsync(cancellationToken)).SingleOrDefault(x => x.Id == orderId)
+            ?? throw new InvalidOperationException("Order not found.");
+
+        return order;
+    }
+
+    private async Task<MenuItem> GetAvailableMenuItemAsync(Guid menuItemId, CancellationToken cancellationToken)
+    {
+        var menuItem = (await queryPort.GetMenuItemsAsync(cancellationToken)).SingleOrDefault(x => x.Id == menuItemId)
+            ?? throw new InvalidOperationException("Menu item not found.");
+
+        if (!menuItem.IsAvailable)
+        {
+            throw new InvalidOperationException("Menu item is not currently available.");
+        }
+
+        return menuItem;
+    }
+
+    private static void EnsureOrderEditable(ServiceOrder order)
+    {
+        if (order.Status is not OrderStatus.Open)
+        {
+            throw new InvalidOperationException("Only open orders can be edited.");
+        }
+    }
+
+    private static void ValidateOrderLines(IReadOnlyCollection<OrderLine> lines)
+    {
+        if (lines.Count == 0)
+        {
+            throw new ArgumentException("An order must contain at least one line item.", nameof(lines));
+        }
+
+        if (lines.Any(x => x.Quantity <= 0))
+        {
+            throw new ArgumentException("Order line quantity must be greater than zero.", nameof(lines));
+        }
     }
 }
 

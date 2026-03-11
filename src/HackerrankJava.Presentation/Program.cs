@@ -11,9 +11,9 @@ builder.Services.AddSingleton<FnbManagementService>();
 
 var app = builder.Build();
 
-app.MapGet("/", (FnbManagementService service) =>
+app.MapGet("/", async (FnbManagementService service, CancellationToken cancellationToken) =>
 {
-    var profile = service.GetProfile();
+    var profile = await service.GetProfileAsync(cancellationToken);
     return Results.Ok(new
     {
         profile.Name,
@@ -24,24 +24,46 @@ app.MapGet("/", (FnbManagementService service) =>
             "/tables",
             "/menu",
             "/orders/open",
+            "/orders/{orderId}/items",
+            "/orders/{orderId}/send-to-kitchen",
+            "/orders/{orderId}/payments",
+            "/orders/{orderId}/close",
             "/reservations/upcoming",
+            "/inventory",
+            "/reports/sales",
             "/integrations/food-app/orders"
         ]
     });
 });
 
-app.MapGet("/tables", (FnbManagementService service) => Results.Ok(service.GetTables()));
-app.MapGet("/menu", (FnbManagementService service) => Results.Ok(service.GetAvailableMenuItems()));
-app.MapGet("/orders/open", (FnbManagementService service) => Results.Ok(service.GetOpenOrders()));
-app.MapGet("/reservations/upcoming", (FnbManagementService service) =>
-    Results.Ok(service.GetUpcomingReservations(DateTimeOffset.UtcNow)));
+app.MapGet("/tables", async (FnbManagementService service, CancellationToken cancellationToken) =>
+    Results.Ok(await service.GetTablesAsync(cancellationToken)));
 
-app.MapPost("/orders", (CreateOrderRequest request, FnbManagementService service) =>
+app.MapGet("/menu", async (FnbManagementService service, CancellationToken cancellationToken) =>
+    Results.Ok(await service.GetAvailableMenuItemsAsync(cancellationToken)));
+
+app.MapGet("/orders/open", async (FnbManagementService service, CancellationToken cancellationToken) =>
+    Results.Ok(await service.GetOpenOrdersAsync(cancellationToken)));
+
+app.MapGet("/reservations/upcoming", async (FnbManagementService service, CancellationToken cancellationToken) =>
+    Results.Ok(await service.GetUpcomingReservationsAsync(DateTimeOffset.UtcNow, cancellationToken)));
+
+app.MapGet("/inventory", async (FnbManagementService service, CancellationToken cancellationToken) =>
+    Results.Ok(await service.GetInventoryAsync(cancellationToken)));
+
+app.MapGet("/reports/sales", async (DateTimeOffset? from, DateTimeOffset? to, FnbManagementService service, CancellationToken cancellationToken) =>
+{
+    var now = DateTimeOffset.UtcNow;
+    var report = await service.GetSalesReportAsync(from ?? now.AddDays(-1), to ?? now, cancellationToken);
+    return Results.Ok(report);
+});
+
+app.MapPost("/orders", async (CreateOrderRequest request, FnbManagementService service, CancellationToken cancellationToken) =>
 {
     try
     {
         var lines = request.Lines.Select(line => new OrderLine(line.MenuItemId, line.Quantity, line.UnitPrice)).ToArray();
-        var order = service.CreateOrder(request.TableId, lines);
+        var order = await service.CreateOrderAsync(request.TableId, lines, cancellationToken);
         return Results.Created($"/orders/{order.Id}", order);
     }
     catch (Exception ex) when (ex is ArgumentException or InvalidOperationException)
@@ -50,16 +72,82 @@ app.MapPost("/orders", (CreateOrderRequest request, FnbManagementService service
     }
 });
 
-app.MapPost("/reservations", (CreateReservationRequest request, FnbManagementService service) =>
+app.MapPost("/orders/{orderId:guid}/items", async (Guid orderId, AddOrderItemRequest request, FnbManagementService service, CancellationToken cancellationToken) =>
 {
     try
     {
-        var reservation = service.CreateReservation(
+        var order = await service.AddOrderItemAsync(orderId, request.MenuItemId, request.Quantity, cancellationToken);
+        return Results.Ok(order);
+    }
+    catch (Exception ex) when (ex is ArgumentOutOfRangeException or InvalidOperationException)
+    {
+        return Results.BadRequest(new { error = ex.Message });
+    }
+});
+
+app.MapDelete("/orders/{orderId:guid}/items", async (Guid orderId, RemoveOrderItemRequest request, FnbManagementService service, CancellationToken cancellationToken) =>
+{
+    try
+    {
+        var order = await service.RemoveOrderItemAsync(orderId, request.MenuItemId, request.Quantity, cancellationToken);
+        return Results.Ok(order);
+    }
+    catch (Exception ex) when (ex is ArgumentOutOfRangeException or InvalidOperationException or ArgumentException)
+    {
+        return Results.BadRequest(new { error = ex.Message });
+    }
+});
+
+app.MapPost("/orders/{orderId:guid}/send-to-kitchen", async (Guid orderId, FnbManagementService service, CancellationToken cancellationToken) =>
+{
+    try
+    {
+        var order = await service.SendOrderToKitchenAsync(orderId, cancellationToken);
+        return Results.Ok(order);
+    }
+    catch (InvalidOperationException ex)
+    {
+        return Results.BadRequest(new { error = ex.Message });
+    }
+});
+
+app.MapPost("/orders/{orderId:guid}/payments", async (Guid orderId, ProcessPaymentRequest request, FnbManagementService service, CancellationToken cancellationToken) =>
+{
+    try
+    {
+        var payment = await service.ProcessPaymentAsync(orderId, request.Amount, request.Method, cancellationToken);
+        return Results.Ok(payment);
+    }
+    catch (Exception ex) when (ex is ArgumentOutOfRangeException or InvalidOperationException)
+    {
+        return Results.BadRequest(new { error = ex.Message });
+    }
+});
+
+app.MapPost("/orders/{orderId:guid}/close", async (Guid orderId, FnbManagementService service, CancellationToken cancellationToken) =>
+{
+    try
+    {
+        var order = await service.CloseOrderAsync(orderId, cancellationToken);
+        return Results.Ok(order);
+    }
+    catch (InvalidOperationException ex)
+    {
+        return Results.BadRequest(new { error = ex.Message });
+    }
+});
+
+app.MapPost("/reservations", async (CreateReservationRequest request, FnbManagementService service, CancellationToken cancellationToken) =>
+{
+    try
+    {
+        var reservation = await service.CreateReservationAsync(
             request.GuestName,
             request.PartySize,
             request.ReservedFor,
             request.ContactPhone,
-            request.Notes);
+            request.Notes,
+            cancellationToken);
 
         return Results.Created($"/reservations/{reservation.Id}", reservation);
     }
@@ -69,15 +157,16 @@ app.MapPost("/reservations", (CreateReservationRequest request, FnbManagementSer
     }
 });
 
-app.MapPost("/integrations/food-app/orders", (IntegrateFoodAppOrderApiRequest request, FnbManagementService service) =>
+app.MapPost("/integrations/food-app/orders", async (IntegrateFoodAppOrderApiRequest request, FnbManagementService service, CancellationToken cancellationToken) =>
 {
     try
     {
-        var result = service.IntegrateFoodAppOrder(new FoodAppOrderRequest(
+        var result = await service.IntegrateFoodAppOrderAsync(new FoodAppOrderRequest(
             request.SourceApp,
             request.ExternalOrderId,
             request.TableCode,
-            request.Items.Select(x => new FoodAppOrderItemRequest(x.MenuItemId, x.Quantity)).ToArray()));
+            request.Items.Select(x => new FoodAppOrderItemRequest(x.MenuItemId, x.Quantity)).ToArray()),
+            cancellationToken);
 
         return Results.Created($"/orders/{result.InternalOrderId}", result);
     }
@@ -92,6 +181,12 @@ app.Run();
 public sealed record CreateOrderRequest(Guid TableId, IReadOnlyCollection<CreateOrderLineRequest> Lines);
 
 public sealed record CreateOrderLineRequest(Guid MenuItemId, int Quantity, decimal UnitPrice);
+
+public sealed record AddOrderItemRequest(Guid MenuItemId, int Quantity);
+
+public sealed record RemoveOrderItemRequest(Guid MenuItemId, int Quantity);
+
+public sealed record ProcessPaymentRequest(decimal Amount, PaymentMethod Method);
 
 public sealed record CreateReservationRequest(
     string GuestName,

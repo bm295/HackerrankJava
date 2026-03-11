@@ -45,17 +45,38 @@ public sealed class InMemoryFnbRepository : IFnbQueryPort, IFnbCommandPort
         new(Guid.NewGuid(), "Tran Hoang Long", 6, DateTimeOffset.UtcNow.AddHours(4), "0912345678", null, ReservationStatus.Pending)
     ];
 
-    public RestaurantProfile GetRestaurantProfile() => _profile;
+    private readonly List<Payment> _payments = [];
+    private readonly List<StockMovement> _stockMovements = [];
+    private readonly List<InventoryItem> _inventory;
 
-    public IReadOnlyCollection<DiningTable> GetTables() => _tables.AsReadOnly();
+    public InMemoryFnbRepository()
+    {
+        _inventory = _menuItems
+            .Select(item => new InventoryItem(Guid.NewGuid(), item.Id, item.Name, 100, "portion"))
+            .ToList();
+    }
 
-    public IReadOnlyCollection<MenuItem> GetMenuItems() => _menuItems.AsReadOnly();
+    public Task<RestaurantProfile> GetRestaurantProfileAsync(CancellationToken cancellationToken = default) => Task.FromResult(_profile);
 
-    public IReadOnlyCollection<ServiceOrder> GetOrders() => _orders.AsReadOnly();
+    public Task<IReadOnlyCollection<DiningTable>> GetTablesAsync(CancellationToken cancellationToken = default) =>
+        Task.FromResult<IReadOnlyCollection<DiningTable>>(_tables.AsReadOnly());
 
-    public IReadOnlyCollection<Reservation> GetReservations() => _reservations.AsReadOnly();
+    public Task<IReadOnlyCollection<MenuItem>> GetMenuItemsAsync(CancellationToken cancellationToken = default) =>
+        Task.FromResult<IReadOnlyCollection<MenuItem>>(_menuItems.AsReadOnly());
 
-    public ServiceOrder AddOrder(Guid tableId, IReadOnlyCollection<OrderLine> lines)
+    public Task<IReadOnlyCollection<ServiceOrder>> GetOrdersAsync(CancellationToken cancellationToken = default) =>
+        Task.FromResult<IReadOnlyCollection<ServiceOrder>>(_orders.AsReadOnly());
+
+    public Task<IReadOnlyCollection<Reservation>> GetReservationsAsync(CancellationToken cancellationToken = default) =>
+        Task.FromResult<IReadOnlyCollection<Reservation>>(_reservations.AsReadOnly());
+
+    public Task<IReadOnlyCollection<InventoryItem>> GetInventoryAsync(CancellationToken cancellationToken = default) =>
+        Task.FromResult<IReadOnlyCollection<InventoryItem>>(_inventory.AsReadOnly());
+
+    public Task<IReadOnlyCollection<Payment>> GetPaymentsAsync(CancellationToken cancellationToken = default) =>
+        Task.FromResult<IReadOnlyCollection<Payment>>(_payments.AsReadOnly());
+
+    public Task<ServiceOrder> AddOrderAsync(Guid tableId, IReadOnlyCollection<OrderLine> lines, CancellationToken cancellationToken = default)
     {
         var table = _tables.SingleOrDefault(x => x.Id == tableId)
             ?? throw new InvalidOperationException("Table not found.");
@@ -68,10 +89,37 @@ public sealed class InMemoryFnbRepository : IFnbQueryPort, IFnbCommandPort
 
         var order = new ServiceOrder(Guid.NewGuid(), tableId, DateTimeOffset.UtcNow, OrderStatus.Open, lines);
         _orders.Add(order);
-        return order;
+        return Task.FromResult(order);
     }
 
-    public Reservation AddReservation(string guestName, int partySize, DateTimeOffset reservedFor, string contactPhone, string? notes)
+    public Task<ServiceOrder> UpdateOrderLinesAsync(Guid orderId, IReadOnlyCollection<OrderLine> lines, CancellationToken cancellationToken = default)
+    {
+        var order = _orders.SingleOrDefault(x => x.Id == orderId)
+            ?? throw new InvalidOperationException("Order not found.");
+
+        var updatedOrder = order with { Lines = lines };
+        _orders[_orders.IndexOf(order)] = updatedOrder;
+        return Task.FromResult(updatedOrder);
+    }
+
+    public Task<ServiceOrder> UpdateOrderStatusAsync(Guid orderId, OrderStatus status, CancellationToken cancellationToken = default)
+    {
+        var order = _orders.SingleOrDefault(x => x.Id == orderId)
+            ?? throw new InvalidOperationException("Order not found.");
+
+        var updatedOrder = order with { Status = status };
+        _orders[_orders.IndexOf(order)] = updatedOrder;
+
+        if (status is OrderStatus.Completed)
+        {
+            var table = _tables.Single(x => x.Id == order.TableId);
+            _tables[_tables.IndexOf(table)] = table with { Status = TableStatus.Available };
+        }
+
+        return Task.FromResult(updatedOrder);
+    }
+
+    public Task<Reservation> AddReservationAsync(string guestName, int partySize, DateTimeOffset reservedFor, string contactPhone, string? notes, CancellationToken cancellationToken = default)
     {
         var reservation = new Reservation(
             Guid.NewGuid(),
@@ -83,6 +131,58 @@ public sealed class InMemoryFnbRepository : IFnbQueryPort, IFnbCommandPort
             ReservationStatus.Pending);
 
         _reservations.Add(reservation);
-        return reservation;
+        return Task.FromResult(reservation);
+    }
+
+    public Task<Payment> AddPaymentAsync(Guid orderId, decimal amount, PaymentMethod paymentMethod, CancellationToken cancellationToken = default)
+    {
+        var order = _orders.SingleOrDefault(x => x.Id == orderId)
+            ?? throw new InvalidOperationException("Order not found.");
+
+        var payment = new Payment(
+            Guid.NewGuid(),
+            orderId,
+            amount,
+            paymentMethod,
+            PaymentStatus.Settled,
+            DateTimeOffset.UtcNow);
+
+        _payments.Add(payment);
+        return Task.FromResult(payment);
+    }
+
+    public Task<IReadOnlyCollection<StockMovement>> DeductInventoryForOrderAsync(Guid orderId, CancellationToken cancellationToken = default)
+    {
+        var order = _orders.SingleOrDefault(x => x.Id == orderId)
+            ?? throw new InvalidOperationException("Order not found.");
+
+        var movements = new List<StockMovement>();
+
+        foreach (var line in order.Lines)
+        {
+            var inventoryItem = _inventory.SingleOrDefault(x => x.MenuItemId == line.MenuItemId)
+                ?? throw new InvalidOperationException("Inventory item mapping not found.");
+
+            var remaining = inventoryItem.StockQuantity - line.Quantity;
+            if (remaining < 0)
+            {
+                throw new InvalidOperationException($"Insufficient inventory for '{inventoryItem.Name}'.");
+            }
+
+            var movement = new StockMovement(
+                Guid.NewGuid(),
+                inventoryItem.Id,
+                orderId,
+                -line.Quantity,
+                DateTimeOffset.UtcNow,
+                "Order Closed");
+
+            movements.Add(movement);
+            _stockMovements.Add(movement);
+
+            _inventory[_inventory.IndexOf(inventoryItem)] = inventoryItem with { StockQuantity = remaining };
+        }
+
+        return Task.FromResult<IReadOnlyCollection<StockMovement>>(movements.AsReadOnly());
     }
 }
