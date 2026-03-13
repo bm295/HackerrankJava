@@ -4,9 +4,27 @@ using HackerrankJava.Infrastructure;
 
 var builder = WebApplication.CreateBuilder(args);
 
-builder.Services.AddSingleton<InMemoryFnbRepository>();
-builder.Services.AddSingleton<IFnbQueryPort>(sp => sp.GetRequiredService<InMemoryFnbRepository>());
-builder.Services.AddSingleton<IFnbCommandPort>(sp => sp.GetRequiredService<InMemoryFnbRepository>());
+builder.Services.AddSingleton<InMemoryFnbStore>();
+builder.Services.AddSingleton<InMemoryRestaurantAdapter>();
+builder.Services.AddSingleton<InMemoryTableAdapter>();
+builder.Services.AddSingleton<InMemoryMenuAdapter>();
+builder.Services.AddSingleton<InMemoryOrderAdapter>();
+builder.Services.AddSingleton<InMemoryReservationAdapter>();
+builder.Services.AddSingleton<InMemoryPaymentAdapter>();
+builder.Services.AddSingleton<InMemoryInventoryAdapter>();
+
+builder.Services.AddSingleton<IRestaurantQueryPort>(sp => sp.GetRequiredService<InMemoryRestaurantAdapter>());
+builder.Services.AddSingleton<ITableQueryPort>(sp => sp.GetRequiredService<InMemoryTableAdapter>());
+builder.Services.AddSingleton<IMenuQueryPort>(sp => sp.GetRequiredService<InMemoryMenuAdapter>());
+builder.Services.AddSingleton<IOrderQueryPort>(sp => sp.GetRequiredService<InMemoryOrderAdapter>());
+builder.Services.AddSingleton<IOrderCommandPort>(sp => sp.GetRequiredService<InMemoryOrderAdapter>());
+builder.Services.AddSingleton<IReservationQueryPort>(sp => sp.GetRequiredService<InMemoryReservationAdapter>());
+builder.Services.AddSingleton<IReservationCommandPort>(sp => sp.GetRequiredService<InMemoryReservationAdapter>());
+builder.Services.AddSingleton<IPaymentQueryPort>(sp => sp.GetRequiredService<InMemoryPaymentAdapter>());
+builder.Services.AddSingleton<IPaymentCommandPort>(sp => sp.GetRequiredService<InMemoryPaymentAdapter>());
+builder.Services.AddSingleton<IInventoryQueryPort>(sp => sp.GetRequiredService<InMemoryInventoryAdapter>());
+builder.Services.AddSingleton<IInventoryCommandPort>(sp => sp.GetRequiredService<InMemoryInventoryAdapter>());
+
 builder.Services.AddSingleton<FnbManagementService>();
 
 var app = builder.Build();
@@ -62,7 +80,7 @@ app.MapPost("/orders", async (CreateOrderRequest request, FnbManagementService s
 {
     try
     {
-        var lines = request.Lines.Select(line => new OrderLine(line.MenuItemId, line.Quantity, line.UnitPrice)).ToArray();
+        var lines = request.Items.Select(line => new CreateOrderLineInput(line.MenuItemId, line.Quantity)).ToArray();
         var order = await service.CreateOrderAsync(request.TableId, lines, cancellationToken);
         return Results.Created($"/orders/{order.Id}", order);
     }
@@ -178,9 +196,9 @@ app.MapPost("/integrations/food-app/orders", async (IntegrateFoodAppOrderApiRequ
 
 app.Run();
 
-public sealed record CreateOrderRequest(Guid TableId, IReadOnlyCollection<CreateOrderLineRequest> Lines);
+public sealed record CreateOrderRequest(Guid TableId, IReadOnlyCollection<CreateOrderItemRequest> Items);
 
-public sealed record CreateOrderLineRequest(Guid MenuItemId, int Quantity, decimal UnitPrice);
+public sealed record CreateOrderItemRequest(Guid MenuItemId, int Quantity);
 
 public sealed record AddOrderItemRequest(Guid MenuItemId, int Quantity);
 

@@ -46,7 +46,7 @@ The API starts locally and exposes endpoints such as:
 - `GET /tables`
 - `GET /menu`
 - `GET /orders/open`
-- `POST /orders`
+- `POST /orders` (server resolves prices from menu catalog)
 - `POST /orders/{orderId}/items`
 - `DELETE /orders/{orderId}/items`
 - `POST /orders/{orderId}/send-to-kitchen`

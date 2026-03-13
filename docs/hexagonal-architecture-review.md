@@ -1,172 +1,122 @@
-# Restaurant Management System Architecture Review
+# Hemispheres Restaurant Management System — Hexagonal Architecture Review
 
 ## 1. Repository overview
 
-- The repository contains two unrelated code areas:
-  - A C# solution (`HackerrankJava.sln`) implementing an FnB API.
-  - Legacy Java practice files under `/java`.
-- The FnB implementation is split into four projects under `/src`:
+- The repository includes a .NET solution (`HackerrankJava.sln`) plus unrelated Java practice files in `java/`; the FnB implementation is the C# code under `src/`.
+- The C# projects remain separated as:
   - `HackerrankJava.Domain`
   - `HackerrankJava.Application`
   - `HackerrankJava.Infrastructure`
   - `HackerrankJava.Presentation`
-- Global build settings target `.NET 10` (`net10.0`) and `C# 14` (`LangVersion 14.0`).
-- Exposed API endpoints currently cover:
-  - restaurant profile
-  - table list
-  - available menu items
-  - open orders
-  - upcoming reservations
-  - create order
-  - create reservation
-  - integrate external food-app order
+- Global build settings target `.NET 10` and `C# 14` through `Directory.Build.props`.
+- API endpoints support profile/tables/menu, full order lifecycle, reservation operations, inventory view, sales reporting, and external food-app order intake.
 
 ## 2. Architecture evaluation
 
-### What is good
+### Positive findings
 
-- There is clear project-level layering and separation:
-  - Domain: core entities/value-like records and enums.
-  - Application: orchestration service and port interfaces.
-  - Infrastructure: in-memory repository implementing application ports.
-  - Presentation: minimal API endpoints and composition root (DI registrations).
-- Controllers/endpoints call an application service (`FnbManagementService`) rather than directly using repository internals.
+- Clear layer separation exists at project level (Domain, Application, Infrastructure, Presentation).
+- Application defines granular ports by concern (restaurant/table/menu/order/reservation/inventory/payment).
+- Infrastructure now uses dedicated in-memory adapters per concern with a shared store, instead of a single overloaded repository.
+- Presentation depends on application ports/services via DI and keeps endpoint handlers thin.
 
-### What is lacking
+### Remaining gaps vs expected target architecture
 
-- The repository does not follow the expected explicit hexagonal folder layout (`/src/Adapters`, `/src/Api` etc.).
-- Use cases are grouped in one service rather than distinct application use-case handlers.
-- Adapter boundaries are coarse (single in-memory adapter; no explicit payment/inventory/reporting adapters).
+- The repository still does not use the explicitly requested package/folder topology (`/src/Adapters`, `/src/Api`, etc.).
+- Use-case logic is still centralized in one orchestration service (`FnbManagementService`) rather than distinct use-case handlers.
+- Infrastructure is still in-memory only (no database-backed adapters).
 
 ## 3. Hexagonal architecture compliance
 
-### Compliant points
+### What is compliant
 
-- Ports exist in the application layer (`IFnbQueryPort`, `IFnbCommandPort`).
-- An adapter implements those ports (`InMemoryFnbRepository`).
-- Dependency direction is mostly inward toward domain.
-- Domain models are framework-agnostic and do not reference ASP.NET/infrastructure types.
+- **Ports in Application**: ports are defined in `HackerrankJava.Application` and are technology-agnostic.
+- **Adapters in Infrastructure**: distinct adapters implement outbound concerns for orders, reservations, payments, inventory, tables, menu, and profile.
+- **Framework isolation**: ASP.NET and DI remain in Presentation.
+- **Inward dependency direction**: Presentation/Infrastructure depend on Application; Application depends on Domain.
 
-### Non-compliant / partial points
+### What is partially compliant
 
-- Missing explicit adapter categories required for restaurant operations:
-  - persistence adapter(s) beyond in-memory storage
-  - payment gateway adapter
-  - inventory adapter
-  - reporting adapter
-- Ports are synchronous only; no async contract surface.
-- The implementation does not provide full command/query separation (single broad service).
+- Explicit adapter package naming (`Adapters.Api`, `Adapters.Persistence`) is still not represented as dedicated projects.
+- Domain remains mostly data-centric records rather than behavior-rich aggregates.
 
 ## 4. Domain model evaluation
 
-- Domain includes: `RestaurantProfile`, `DiningTable`, `MenuItem`, `ServiceOrder`, `Reservation` and related enums.
-- Seat-capacity target is represented via profile range `60..80` and seeded tables total 78 seats, which fits the stated restaurant size.
-- However, domain behavior is mostly anemic:
-  - no aggregate methods for lifecycle transitions
-  - minimal business rule enforcement in domain itself
-  - business invariants largely enforced in application service/repository
-- Missing core domain concepts for requirements:
-  - `Payment`
-  - `InventoryItem` / stock movement
-  - `KitchenTicket` / dispatch workflow
-  - reporting models
+- Domain concepts present: restaurant profile, tables, menu, service orders/order lines, reservations, payments, inventory/stock movements, and sales report.
+- Seat-capacity suitability is represented (`60..80`) and seeded tables total 78 seats.
+- Domain behavior is still limited:
+  - Most transition rules live in application service.
+  - Entities are mostly immutable records with minimal domain methods.
 
 ## 5. FnB functionality coverage
 
-### Implemented
+Required operational flow coverage:
 
-- Create order for a table.
-- Create reservation.
-- List open orders, available menu, tables, and upcoming reservations.
-- Basic external food-app ingestion.
+1. **Create order for table** — implemented.
+2. **Add/remove items** — implemented.
+3. **Send order to kitchen** — implemented.
+4. **Process payment** — implemented.
+5. **Deduct inventory** — implemented at order closing.
+6. **Close order** — implemented with settled-payment guard.
 
-### Missing versus required flow
+Additional required capability:
 
-Required realistic flow:
-1. Create order for a table ✅
-2. Add/remove items ❌ (no update endpoint/use case for existing order lines)
-3. Send order to kitchen ❌ (no explicit use case/state transition)
-4. Process payment ❌ (no payment model/port/adapter)
-5. Deduct inventory ❌ (no stock model/rules/adapter)
-6. Close order ❌ (no close-order use case)
+- **Basic reporting** — implemented via sales report query endpoint.
 
-Also missing:
-- Basic reporting (sales, table turnover, product performance).
+Hardening completed:
+
+- Order creation now resolves prices server-side from menu catalog (client no longer supplies `UnitPrice`), reducing pricing-tampering risk.
 
 ## 6. Dependency direction analysis
 
-- Current compile-time dependency flow is:
-  - `Application -> Domain`
-  - `Infrastructure -> Application`
-  - `Presentation -> Application + Infrastructure`
-- This is directionally acceptable for hexagonal architecture.
-- No direct controller-to-repository access found in endpoints; endpoints use `FnbManagementService`.
-- Domain layer remains isolated from infrastructure/framework concerns.
+Observed project references:
+
+- `Application -> Domain`
+- `Infrastructure -> Application`
+- `Presentation -> Application + Infrastructure`
+- `Domain` has no reference to outer layers.
+
+This preserves inward dependency flow and keeps framework/infrastructure concerns out of the domain layer.
 
 ## 7. Code quality review
 
 ### Strengths
 
-- Clean readable C# style with records and minimal API mapping.
-- DI setup is straightforward and clear at composition root.
-- Guard clauses exist in service methods for common invalid input.
+- DI registration is explicit and clear.
+- Async signatures are used across ports/services/adapters/endpoints.
+- Validation/guard clauses are present for critical flows.
+- Endpoint business logic remains thin and delegated to application service.
 
-### Weaknesses
+### Risks / quality issues
 
-- No asynchronous programming usage in ports/use cases/endpoints.
-- No test project observed for domain/application/API behavior.
-- In-memory repository is non-durable and unsuitable for realistic restaurant operations.
-- Detected correctness/build issue: `PriceVnd` is referenced in food-app integration but `MenuItem` exposes `Price`.
+- No automated test project is present.
+- In-memory adapters are non-durable and not production-grade for concurrent restaurant operations.
+- The orchestration service remains large and could be split for maintainability.
 
 ## 8. Identified architectural violations
 
-1. **Requirement mismatch:** Required payment, inventory, order-close, and reporting capabilities are not implemented.
-2. **Partial hexagonal implementation:** Ports exist, but adapters are not fully decomposed by responsibility.
-3. **Async requirement violation:** End-to-end synchronous contracts only.
-4. **Domain-rule leakage:** Important workflow/business transitions are not modeled as domain behavior.
-5. **Potential build defect:** Inconsistent menu price property naming in integration mapping.
+1. **Strict structure mismatch**: expected explicit `Adapters`/`Api` segmentation is not yet mirrored in project names/layout.
+2. **Anemic domain**: core lifecycle rules are still primarily outside domain entities.
+3. **No production persistence**: infrastructure has no database or resilient external integration implementation.
+4. **Testing gap**: no unit/integration test coverage for core business flows.
 
 ## 9. Recommended refactoring
 
-1. **Restructure explicitly around hexagonal concepts**
-   - `/src/Domain`
-   - `/src/Application` (commands/queries/use cases + inbound/outbound ports)
-   - `/src/Adapters/Api`
-   - `/src/Adapters/Persistence`
-   - `/src/Adapters/External`
-   - `/src/Infrastructure` (framework/host wiring)
+1. **Restructure projects by hexagonal roles explicitly**
+   - Introduce dedicated API adapter and persistence adapter projects/folders.
 
-2. **Create dedicated use cases (one class/handler each)**
-   - `CreateOrder`
-   - `AddOrderItem`
-   - `RemoveOrderItem`
-   - `SendOrderToKitchen`
-   - `ProcessPayment`
-   - `DeductInventory`
-   - `CloseOrder`
-   - reporting queries
+2. **Split orchestration into use-case handlers**
+   - `CreateOrder`, `AddOrderItem`, `SendOrderToKitchen`, `ProcessPayment`, `CloseOrder`, `GetSalesReport`, etc.
 
-3. **Introduce outbound ports and adapters**
-   - `IPaymentGatewayPort`
-   - `IInventoryPort`
-   - `IKitchenDispatchPort`
-   - `IReportingQueryPort`
+3. **Move critical invariants into domain behavior**
+   - Add aggregate methods for valid transitions and invariant enforcement.
 
-4. **Adopt async-first contracts**
-   - `Task`/`ValueTask` return types and `CancellationToken` across API -> application -> adapters.
+4. **Introduce production persistence and integration adapters**
+   - Database-backed repositories and robust external gateway adapters.
 
-5. **Strengthen domain model**
-   - Move lifecycle rules into aggregates/entities.
-   - Introduce explicit domain events for kitchen dispatch, stock deduction, payment confirmation.
-
-6. **Fix integration property mismatch**
-   - Replace `menuItem.PriceVnd` with `menuItem.Price` or create a clear money value object naming convention.
-
-7. **Add test coverage**
-   - Domain invariant unit tests.
-   - Application use-case tests with mocked ports.
-   - API integration tests for complete order-to-payment-to-close flow.
+5. **Add test suites**
+   - Domain invariant tests, application use-case tests, and API integration tests.
 
 ## 10. Overall verdict
 
-**PARTIAL** — The repository now implements the core FnB flow (order creation/editing, kitchen send, payment, inventory deduction, close order, and basic reporting) with inward dependencies and async ports, but still only partially realizes explicit hexagonal packaging (for example, missing dedicated /Adapters project segmentation and richer infrastructure adapters).
+**PARTIAL** — The repository now addresses the key review findings around coarse adapter boundaries and client-driven pricing, and it provides strong layered architecture with DI/async and complete core FnB flow coverage. It still falls short of full strict hexagonal compliance due to missing explicit adapter packaging, an anemic domain model, and absence of production-grade persistence/testing.
