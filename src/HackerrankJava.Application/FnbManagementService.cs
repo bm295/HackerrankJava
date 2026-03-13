@@ -2,61 +2,108 @@ using HackerrankJava.Domain;
 
 namespace HackerrankJava.Application;
 
-public interface IFnbQueryPort
+public interface IRestaurantQueryPort
 {
     Task<RestaurantProfile> GetRestaurantProfileAsync(CancellationToken cancellationToken = default);
-    Task<IReadOnlyCollection<DiningTable>> GetTablesAsync(CancellationToken cancellationToken = default);
-    Task<IReadOnlyCollection<MenuItem>> GetMenuItemsAsync(CancellationToken cancellationToken = default);
-    Task<IReadOnlyCollection<ServiceOrder>> GetOrdersAsync(CancellationToken cancellationToken = default);
-    Task<IReadOnlyCollection<Reservation>> GetReservationsAsync(CancellationToken cancellationToken = default);
-    Task<IReadOnlyCollection<InventoryItem>> GetInventoryAsync(CancellationToken cancellationToken = default);
-    Task<IReadOnlyCollection<Payment>> GetPaymentsAsync(CancellationToken cancellationToken = default);
 }
 
-public interface IFnbCommandPort
+public interface ITableQueryPort
+{
+    Task<IReadOnlyCollection<DiningTable>> GetTablesAsync(CancellationToken cancellationToken = default);
+}
+
+public interface IMenuQueryPort
+{
+    Task<IReadOnlyCollection<MenuItem>> GetMenuItemsAsync(CancellationToken cancellationToken = default);
+}
+
+public interface IOrderQueryPort
+{
+    Task<IReadOnlyCollection<ServiceOrder>> GetOrdersAsync(CancellationToken cancellationToken = default);
+}
+
+public interface IOrderCommandPort
 {
     Task<ServiceOrder> AddOrderAsync(Guid tableId, IReadOnlyCollection<OrderLine> lines, CancellationToken cancellationToken = default);
     Task<ServiceOrder> UpdateOrderLinesAsync(Guid orderId, IReadOnlyCollection<OrderLine> lines, CancellationToken cancellationToken = default);
     Task<ServiceOrder> UpdateOrderStatusAsync(Guid orderId, OrderStatus status, CancellationToken cancellationToken = default);
+}
+
+public interface IReservationQueryPort
+{
+    Task<IReadOnlyCollection<Reservation>> GetReservationsAsync(CancellationToken cancellationToken = default);
+}
+
+public interface IReservationCommandPort
+{
     Task<Reservation> AddReservationAsync(string guestName, int partySize, DateTimeOffset reservedFor, string contactPhone, string? notes, CancellationToken cancellationToken = default);
+}
+
+public interface IInventoryQueryPort
+{
+    Task<IReadOnlyCollection<InventoryItem>> GetInventoryAsync(CancellationToken cancellationToken = default);
+}
+
+public interface IInventoryCommandPort
+{
     Task<IReadOnlyCollection<StockMovement>> DeductInventoryForOrderAsync(Guid orderId, CancellationToken cancellationToken = default);
+}
+
+public interface IPaymentQueryPort
+{
+    Task<IReadOnlyCollection<Payment>> GetPaymentsAsync(CancellationToken cancellationToken = default);
+}
+
+public interface IPaymentCommandPort
+{
     Task<Payment> AddPaymentAsync(Guid orderId, decimal amount, PaymentMethod paymentMethod, CancellationToken cancellationToken = default);
 }
 
-public sealed class FnbManagementService(IFnbQueryPort queryPort, IFnbCommandPort commandPort)
+public sealed class FnbManagementService(
+    IRestaurantQueryPort restaurantQueryPort,
+    ITableQueryPort tableQueryPort,
+    IMenuQueryPort menuQueryPort,
+    IOrderQueryPort orderQueryPort,
+    IOrderCommandPort orderCommandPort,
+    IReservationQueryPort reservationQueryPort,
+    IReservationCommandPort reservationCommandPort,
+    IInventoryQueryPort inventoryQueryPort,
+    IInventoryCommandPort inventoryCommandPort,
+    IPaymentQueryPort paymentQueryPort,
+    IPaymentCommandPort paymentCommandPort)
 {
     public Task<RestaurantProfile> GetProfileAsync(CancellationToken cancellationToken = default) =>
-        queryPort.GetRestaurantProfileAsync(cancellationToken);
+        restaurantQueryPort.GetRestaurantProfileAsync(cancellationToken);
 
     public Task<IReadOnlyCollection<DiningTable>> GetTablesAsync(CancellationToken cancellationToken = default) =>
-        queryPort.GetTablesAsync(cancellationToken);
+        tableQueryPort.GetTablesAsync(cancellationToken);
 
     public async Task<IReadOnlyCollection<MenuItem>> GetAvailableMenuItemsAsync(CancellationToken cancellationToken = default) =>
-        (await queryPort.GetMenuItemsAsync(cancellationToken))
+        (await menuQueryPort.GetMenuItemsAsync(cancellationToken))
         .Where(item => item.IsAvailable)
         .OrderBy(item => item.Category, StringComparer.Ordinal)
         .ThenBy(item => item.Name, StringComparer.Ordinal)
         .ToArray();
 
     public async Task<IReadOnlyCollection<ServiceOrder>> GetOpenOrdersAsync(CancellationToken cancellationToken = default) =>
-        (await queryPort.GetOrdersAsync(cancellationToken))
+        (await orderQueryPort.GetOrdersAsync(cancellationToken))
         .Where(order => order.Status is OrderStatus.Open or OrderStatus.SentToKitchen)
         .OrderByDescending(order => order.CreatedAt)
         .ToArray();
 
     public async Task<IReadOnlyCollection<Reservation>> GetUpcomingReservationsAsync(DateTimeOffset now, CancellationToken cancellationToken = default) =>
-        (await queryPort.GetReservationsAsync(cancellationToken))
+        (await reservationQueryPort.GetReservationsAsync(cancellationToken))
         .Where(reservation => reservation.ReservedFor >= now && reservation.Status is not ReservationStatus.Cancelled)
         .OrderBy(reservation => reservation.ReservedFor)
         .ToArray();
 
     public Task<IReadOnlyCollection<InventoryItem>> GetInventoryAsync(CancellationToken cancellationToken = default) =>
-        queryPort.GetInventoryAsync(cancellationToken);
+        inventoryQueryPort.GetInventoryAsync(cancellationToken);
 
     public async Task<SalesReport> GetSalesReportAsync(DateTimeOffset from, DateTimeOffset to, CancellationToken cancellationToken = default)
     {
-        var payments = await queryPort.GetPaymentsAsync(cancellationToken);
-        var orders = await queryPort.GetOrdersAsync(cancellationToken);
+        var payments = await paymentQueryPort.GetPaymentsAsync(cancellationToken);
+        var orders = await orderQueryPort.GetOrdersAsync(cancellationToken);
 
         var successfulPayments = payments
             .Where(x => x.Status is PaymentStatus.Settled && x.PaidAt >= from && x.PaidAt <= to)
@@ -69,10 +116,12 @@ public sealed class FnbManagementService(IFnbQueryPort queryPort, IFnbCommandPor
         return new SalesReport(from, to, totalRevenue, successfulPayments.Length, closedOrders);
     }
 
-    public Task<ServiceOrder> CreateOrderAsync(Guid tableId, IReadOnlyCollection<OrderLine> lines, CancellationToken cancellationToken = default)
+    public async Task<ServiceOrder> CreateOrderAsync(Guid tableId, IReadOnlyCollection<CreateOrderLineInput> items, CancellationToken cancellationToken = default)
     {
-        ValidateOrderLines(lines);
-        return commandPort.AddOrderAsync(tableId, lines, cancellationToken);
+        ValidateOrderItems(items);
+
+        var lines = await BuildOrderLinesFromMenuAsync(items, cancellationToken);
+        return await orderCommandPort.AddOrderAsync(tableId, lines, cancellationToken);
     }
 
     public async Task<ServiceOrder> AddOrderItemAsync(Guid orderId, Guid menuItemId, int quantity, CancellationToken cancellationToken = default)
@@ -100,7 +149,7 @@ public sealed class FnbManagementService(IFnbQueryPort queryPort, IFnbCommandPor
             lines[index] = existingLine with { Quantity = existingLine.Quantity + quantity };
         }
 
-        return await commandPort.UpdateOrderLinesAsync(orderId, lines, cancellationToken);
+        return await orderCommandPort.UpdateOrderLinesAsync(orderId, lines, cancellationToken);
     }
 
     public async Task<ServiceOrder> RemoveOrderItemAsync(Guid orderId, Guid menuItemId, int quantity, CancellationToken cancellationToken = default)
@@ -130,7 +179,7 @@ public sealed class FnbManagementService(IFnbQueryPort queryPort, IFnbCommandPor
         }
 
         ValidateOrderLines(lines);
-        return await commandPort.UpdateOrderLinesAsync(orderId, lines, cancellationToken);
+        return await orderCommandPort.UpdateOrderLinesAsync(orderId, lines, cancellationToken);
     }
 
     public async Task<ServiceOrder> SendOrderToKitchenAsync(Guid orderId, CancellationToken cancellationToken = default)
@@ -141,7 +190,7 @@ public sealed class FnbManagementService(IFnbQueryPort queryPort, IFnbCommandPor
             throw new InvalidOperationException("Only open orders can be sent to kitchen.");
         }
 
-        return await commandPort.UpdateOrderStatusAsync(orderId, OrderStatus.SentToKitchen, cancellationToken);
+        return await orderCommandPort.UpdateOrderStatusAsync(orderId, OrderStatus.SentToKitchen, cancellationToken);
     }
 
     public async Task<Payment> ProcessPaymentAsync(Guid orderId, decimal amount, PaymentMethod paymentMethod, CancellationToken cancellationToken = default)
@@ -162,14 +211,14 @@ public sealed class FnbManagementService(IFnbQueryPort queryPort, IFnbCommandPor
             throw new InvalidOperationException("Payment amount is less than order total.");
         }
 
-        return await commandPort.AddPaymentAsync(orderId, amount, paymentMethod, cancellationToken);
+        return await paymentCommandPort.AddPaymentAsync(orderId, amount, paymentMethod, cancellationToken);
     }
 
     public async Task<ServiceOrder> CloseOrderAsync(Guid orderId, CancellationToken cancellationToken = default)
     {
-        var order = await GetOrderByIdAsync(orderId, cancellationToken);
+        _ = await GetOrderByIdAsync(orderId, cancellationToken);
 
-        var payments = await queryPort.GetPaymentsAsync(cancellationToken);
+        var payments = await paymentQueryPort.GetPaymentsAsync(cancellationToken);
         var hasSettledPayment = payments.Any(x => x.OrderId == orderId && x.Status is PaymentStatus.Settled);
 
         if (!hasSettledPayment)
@@ -177,8 +226,8 @@ public sealed class FnbManagementService(IFnbQueryPort queryPort, IFnbCommandPor
             throw new InvalidOperationException("Order cannot be closed before successful payment.");
         }
 
-        await commandPort.DeductInventoryForOrderAsync(orderId, cancellationToken);
-        return await commandPort.UpdateOrderStatusAsync(orderId, OrderStatus.Completed, cancellationToken);
+        await inventoryCommandPort.DeductInventoryForOrderAsync(orderId, cancellationToken);
+        return await orderCommandPort.UpdateOrderStatusAsync(orderId, OrderStatus.Completed, cancellationToken);
     }
 
     public Task<Reservation> CreateReservationAsync(string guestName, int partySize, DateTimeOffset reservedFor, string contactPhone, string? notes, CancellationToken cancellationToken = default)
@@ -188,7 +237,7 @@ public sealed class FnbManagementService(IFnbQueryPort queryPort, IFnbCommandPor
             throw new ArgumentOutOfRangeException(nameof(partySize), "Party size must be greater than zero.");
         }
 
-        return commandPort.AddReservationAsync(guestName, partySize, reservedFor, contactPhone, notes, cancellationToken);
+        return reservationCommandPort.AddReservationAsync(guestName, partySize, reservedFor, contactPhone, notes, cancellationToken);
     }
 
     public async Task<FoodAppIntegrationResult> IntegrateFoodAppOrderAsync(FoodAppOrderRequest request, CancellationToken cancellationToken = default)
@@ -208,13 +257,30 @@ public sealed class FnbManagementService(IFnbQueryPort queryPort, IFnbCommandPor
             throw new ArgumentException("At least one food app item is required.", nameof(request));
         }
 
-        var table = (await queryPort.GetTablesAsync(cancellationToken))
+        var table = (await tableQueryPort.GetTablesAsync(cancellationToken))
             .SingleOrDefault(x => string.Equals(x.Code, request.TableCode, StringComparison.OrdinalIgnoreCase))
             ?? throw new InvalidOperationException($"Table code '{request.TableCode}' was not found.");
 
-        var menuItemsById = (await queryPort.GetMenuItemsAsync(cancellationToken)).ToDictionary(item => item.Id, item => item);
+        var lines = await BuildOrderLinesFromMenuAsync(
+            request.Items.Select(x => new CreateOrderLineInput(x.MenuItemId, x.Quantity)).ToArray(),
+            cancellationToken);
 
-        var lines = request.Items
+        var order = await orderCommandPort.AddOrderAsync(table.Id, lines, cancellationToken);
+
+        return new FoodAppIntegrationResult(
+            request.SourceApp,
+            request.ExternalOrderId,
+            order.Id,
+            table.Code,
+            order.CreatedAt,
+            order.TotalAmount);
+    }
+
+    private async Task<IReadOnlyCollection<OrderLine>> BuildOrderLinesFromMenuAsync(IReadOnlyCollection<CreateOrderLineInput> items, CancellationToken cancellationToken)
+    {
+        var menuItemsById = (await menuQueryPort.GetMenuItemsAsync(cancellationToken)).ToDictionary(item => item.Id, item => item);
+
+        return items
             .Select(item =>
             {
                 if (!menuItemsById.TryGetValue(item.MenuItemId, out var menuItem))
@@ -227,29 +293,14 @@ public sealed class FnbManagementService(IFnbQueryPort queryPort, IFnbCommandPor
                     throw new InvalidOperationException($"Menu item '{menuItem.Name}' is not currently available.");
                 }
 
-                if (item.Quantity <= 0)
-                {
-                    throw new ArgumentOutOfRangeException(nameof(request), "Each item quantity must be greater than zero.");
-                }
-
                 return new OrderLine(menuItem.Id, item.Quantity, menuItem.Price);
             })
             .ToArray();
-
-        var order = await CreateOrderAsync(table.Id, lines, cancellationToken);
-
-        return new FoodAppIntegrationResult(
-            request.SourceApp,
-            request.ExternalOrderId,
-            order.Id,
-            table.Code,
-            order.CreatedAt,
-            order.TotalAmount);
     }
 
     private async Task<ServiceOrder> GetOrderByIdAsync(Guid orderId, CancellationToken cancellationToken)
     {
-        var order = (await queryPort.GetOrdersAsync(cancellationToken)).SingleOrDefault(x => x.Id == orderId)
+        var order = (await orderQueryPort.GetOrdersAsync(cancellationToken)).SingleOrDefault(x => x.Id == orderId)
             ?? throw new InvalidOperationException("Order not found.");
 
         return order;
@@ -257,7 +308,7 @@ public sealed class FnbManagementService(IFnbQueryPort queryPort, IFnbCommandPor
 
     private async Task<MenuItem> GetAvailableMenuItemAsync(Guid menuItemId, CancellationToken cancellationToken)
     {
-        var menuItem = (await queryPort.GetMenuItemsAsync(cancellationToken)).SingleOrDefault(x => x.Id == menuItemId)
+        var menuItem = (await menuQueryPort.GetMenuItemsAsync(cancellationToken)).SingleOrDefault(x => x.Id == menuItemId)
             ?? throw new InvalidOperationException("Menu item not found.");
 
         if (!menuItem.IsAvailable)
@@ -276,6 +327,19 @@ public sealed class FnbManagementService(IFnbQueryPort queryPort, IFnbCommandPor
         }
     }
 
+    private static void ValidateOrderItems(IReadOnlyCollection<CreateOrderLineInput> lines)
+    {
+        if (lines.Count == 0)
+        {
+            throw new ArgumentException("An order must contain at least one line item.", nameof(lines));
+        }
+
+        if (lines.Any(x => x.Quantity <= 0))
+        {
+            throw new ArgumentException("Order line quantity must be greater than zero.", nameof(lines));
+        }
+    }
+
     private static void ValidateOrderLines(IReadOnlyCollection<OrderLine> lines)
     {
         if (lines.Count == 0)
@@ -289,6 +353,8 @@ public sealed class FnbManagementService(IFnbQueryPort queryPort, IFnbCommandPor
         }
     }
 }
+
+public sealed record CreateOrderLineInput(Guid MenuItemId, int Quantity);
 
 public sealed record FoodAppOrderRequest(
     string SourceApp,
